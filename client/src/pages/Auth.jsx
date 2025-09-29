@@ -1,7 +1,13 @@
+// client/src/pages/Auth.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { createClient } from '@supabase/supabase-js';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 export default function Auth() {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
@@ -11,35 +17,53 @@ export default function Auth() {
   const [error, setError] = useState('');
   const navigate = useNavigate();
 
+  // If already logged in with Supabase, go to dashboard
   useEffect(() => {
     (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/auth/me`, { credentials: 'include' });
-        if (res.ok) navigate('/dashboard');
-      } catch { /* noop */ }
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        const ok = await pingMe(session.access_token);
+        if (ok) navigate('/dashboard');
+      }
     })();
   }, [navigate]);
+
+  async function pingMe(token) {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include' // safe to include; backend ignores cookie on Bearer path
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
     setLoading(true);
-
     try {
-      const endpoint = mode === 'login' ? 'login' : 'register';
-      const res = await fetch(`${API_BASE}/api/auth/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ email, password })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Something went wrong');
-
       if (mode === 'register') {
+        const { error: signUpErr } = await supabase.auth.signUp({ email, password });
+        if (signUpErr) throw signUpErr;
+        // Optional: Supabase may require email confirmation depending on your project settings.
+        // For now, flip back to login.
         setMode('login');
+        setLoading(false);
+        return;
       } else {
+        const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
+        if (signInErr) throw signInErr;
+
+        const token = data.session?.access_token;
+        if (!token) throw new Error('No session token from Supabase');
+
+        // Call backend /me to upsert/resolve profile & confirm access
+        const ok = await pingMe(token);
+        if (!ok) throw new Error('Backend rejected the token');
+
         navigate('/dashboard');
       }
     } catch (err) {
@@ -53,17 +77,21 @@ export default function Auth() {
     <div className="min-h-screen grid place-items-center bg-gradient-to-b from-gray-50 to-gray-100 p-4">
       <div className="w-full max-w-md">
         <div className="bg-white rounded-2xl shadow p-8 border">
-          <h1 className="text-2xl font-semibold text-center">{mode === 'login' ? 'Sign in' : 'Create account'}</h1>
+          <h1 className="text-2xl font-semibold text-center">
+            {mode === 'login' ? 'Sign in' : 'Create account'}
+          </h1>
           <p className="mt-2 text-center text-gray-600">
             {mode === 'login' ? (
-              <>
-                New here?{' '}
-                <button className="text-blue-600 hover:underline" onClick={() => setMode('register')}>Register</button>
+              <>New here?{' '}
+                <button className="text-blue-600 hover:underline" onClick={() => setMode('register')}>
+                  Register
+                </button>
               </>
             ) : (
-              <>
-                Already have an account?{' '}
-                <button className="text-blue-600 hover:underline" onClick={() => setMode('login')}>Sign in</button>
+              <>Already have an account?{' '}
+                <button className="text-blue-600 hover:underline" onClick={() => setMode('login')}>
+                  Sign in
+                </button>
               </>
             )}
           </p>
@@ -107,7 +135,7 @@ export default function Auth() {
           </form>
 
           <p className="mt-6 text-center text-xs text-gray-500">
-            This demo sets an httpOnly cookie on successful sign in. Replace nothing — it already uses your database via Prisma.
+            Signed in with Supabase. We pass a Bearer token to your API; server verifies and links your profile.
           </p>
         </div>
       </div>
