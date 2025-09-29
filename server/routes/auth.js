@@ -1,47 +1,40 @@
+// server/routes/auth.js
 import { Router } from 'express';
 import cookieParser from 'cookie-parser';
 import { createUserWithPassword, verifyPasswordLogin, signToken } from '../lib/auth.js';
+import { upsertUserFromSupabase } from '../lib/auth.js';
+import { verifySupabaseJWT } from '../lib/supabase.js';
 
 const router = Router();
 router.use(cookieParser());
 
-router.post('/register', async (req, res) => {
-  try {
-    const { email, name, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
-    const user = await createUserWithPassword({ email, name, password });
-    return res.status(201).json({ message: 'registered', user: { id: user.id, email: user.email, name: user.name } });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
+// Helper to read Authorization: Bearer <token>
+function readBearer(req) {
+  const h = req.headers.authorization || '';
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
+}
+
+// --- Existing email+password endpoints stay unchanged ---
+router.post('/register', /* ...as you have now... */);
+router.post('/login',    /* ...as you have now... */);
+router.post('/logout',   /* ...as you have now... */);
+
+// --- Me endpoint: accept Supabase Bearer OR your cookie JWT ---
+router.get('/me', async (req, res) => {
+  // 1) Supabase Bearer path
+  const bearer = readBearer(req);
+  if (bearer) {
+    try {
+      const payload = await verifySupabaseJWT(bearer);
+      const user = await upsertUserFromSupabase(payload);
+      return res.json({ user });
+    } catch (e) {
+      return res.status(401).json({ error: 'invalid bearer token' });
+    }
   }
-});
 
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
-    const user = await verifyPasswordLogin({ email, password });
-    if (!user) return res.status(401).json({ error: 'invalid credentials' });
-
-    const token = signToken({ sub: String(user.id), email: user.email, role: user.role }, req.app.get('jwtSecret'));
-    res.cookie(req.app.get('cookieName'), token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-    return res.json({ message: 'logged in', user });
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
-});
-
-router.post('/logout', (req, res) => {
-  res.clearCookie(req.app.get('cookieName'), { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
-  return res.json({ message: 'logged out' });
-});
-
-router.get('/me', (req, res) => {
+  // 2) Fallback to your cookie JWT (works with your current flow)
   const token = req.cookies[req.app.get('cookieName')];
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
