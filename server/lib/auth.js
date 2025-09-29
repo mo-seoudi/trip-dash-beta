@@ -1,31 +1,24 @@
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+// server/lib/auth.js
 import { prisma } from './prisma.js';
 
-export async function createUserWithPassword({ email, name, password }) {
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) throw new Error('User already exists');
-  if (!password || password.length < 6) throw new Error('Password must be at least 6 characters');
+export async function upsertUserFromSupabase(payload) {
+  const email = payload.email;
+  if (!email) throw new Error('Supabase token missing email');
+  const name =
+    payload.user_metadata?.name ||
+    payload.user_metadata?.full_name ||
+    email;
 
-  const passwordHash = await bcrypt.hash(password, 12);
-  // Keep your model defaults for role/status
-  return prisma.user.create({ data: { email, name: name || email, passwordHash } });
-}
-
-export async function verifyPasswordLogin({ email, password }) {
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !user.passwordHash) return null;
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return null;
-
-  // Optional gate: restrict to approved users only (uncomment to enforce)
-  // if (user.status && user.status !== 'approved') {
-  //   throw new Error('Account not approved yet');
-  // }
-
-  return { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status };
-}
-
-export function signToken(payload, secret) {
-  return jwt.sign(payload, secret, { expiresIn: '7d' });
+  // No passwordHash here — Supabase holds the password
+  return prisma.user.upsert({
+    where: { email },
+    update: { name },
+    create: {
+      email,
+      name,
+      // you can auto-approve or keep default status from your schema:
+      // status: 'approved',
+    },
+    select: { id: true, email: true, name: true, role: true, status: true }
+  });
 }
